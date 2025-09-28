@@ -1,0 +1,877 @@
+#+TITLE: PR to Change Request Workflow - Guile Implementation
+#+AUTHOR: DevOps Team
+#+DATE: [2024-09-28]
+#+PROPERTY: header-args:scheme :tangle yes :mkdirp yes :shebang "#!/usr/bin/env guile3"
+#+PROPERTY: header-args :results output :exports both
+#+OPTIONS: toc:3 num:nil ^:nil
+
+* Project Overview
+
+This is a Guile 3 implementation of the PR to Change Request workflow that automates
+the creation of ITIL 4 compliant Change Request documents from GitHub Pull Requests.
+
+* Configuration and Common Libraries
+
+** Simple JSON Module
+
+Since Guile doesn't have a built-in JSON module in the base FreeBSD package, we implement a simple JSON parser/writer.
+
+#+begin_src scheme :tangle scripts/json-simple.scm :shebang nil
+;;; Simple JSON parser and writer for Guile
+(define-module (json-simple)
+  #:use-module (ice-9 rdelim)
+  #:use-module (ice-9 regex)
+  #:use-module (ice-9 format)
+  #:use-module (srfi srfi-1)
+  #:export (json->scm
+            scm->json
+            scm->json-string))
+
+(define (json->scm port)
+  "Parse JSON from port using jq as external tool"
+  (let* ((temp-file (tmpnam))
+         (content (read-string port)))
+    (call-with-output-file temp-file
+      (lambda (p) (display content p)))
+    (let* ((result-port (open-pipe* OPEN_READ "jq" "." temp-file))
+           (result (read result-port)))
+      (close-pipe result-port)
+      (delete-file temp-file)
+      result)))
+
+(define (scm->json-string obj)
+  "Convert Scheme object to JSON string"
+  (cond
+   ((null? obj) "null")
+   ((boolean? obj) (if obj "true" "false"))
+   ((number? obj) (number->string obj))
+   ((string? obj) (format #f "~s" obj))
+   ((symbol? obj) (format #f "~s" (symbol->string obj)))
+   ((list? obj)
+    (if (and (not (null? obj))
+             (every pair? obj)
+             (every (lambda (p) (or (string? (car p)) (symbol? (car p)))) obj))
+        ;; It's an association list (object)
+        (string-append "{"
+                      (string-join
+                       (map (lambda (pair)
+                              (format #f "~s:~a"
+                                     (if (symbol? (car pair))
+                                         (symbol->string (car pair))
+                                         (car pair))
+                                     (scm->json-string (cdr pair))))
+                            obj)
+                       ",")
+                      "}")
+        ;; It's a regular list (array)
+        (string-append "["
+                      (string-join (map scm->json-string obj) ",")
+                      "]")))
+   (else "null")))
+
+(define (scm->json obj port . args)
+  "Write Scheme object as JSON to port"
+  (let ((pretty (and (not (null? args))
+                     (memq #:pretty args))))
+    (display (scm->json-string obj) port)
+    (when pretty (newline port))))
+#+end_src
+
+** Common Module
+
+This module contains shared utilities used across all scripts.
+
+#+begin_src scheme :tangle scripts/common.scm :shebang nil
+;;; Common utilities for PR2CR workflow
+(define-module (pr2cr common)
+  #:use-module (ice-9 format)
+  #:use-module (ice-9 match)
+  #:use-module (ice-9 regex)
+  #:use-module (ice-9 rdelim)
+  #:use-module (ice-9 popen)
+  #:use-module (json-simple)
+  #:use-module (web client)
+  #:use-module (web uri)
+  #:use-module (web request)
+  #:use-module (web response)
+  #:use-module (srfi srfi-1)
+  #:use-module (srfi srfi-9)
+  #:use-module (srfi srfi-19)
+  #:use-module (srfi srfi-26)
+  #:export (read-json-file
+            write-json-file
+            get-env-var
+            make-http-request
+            extract-regex-matches
+            log-info
+            log-warning
+            log-error))
+
+(define (log-info msg . args)
+  "Log info message to stderr"
+  (format (current-error-port) "INFO: ~a~%"
+          (if (null? args) msg (apply format #f msg args))))
+
+(define (log-warning msg . args)
+  "Log warning message to stderr"
+  (format (current-error-port) "WARNING: ~a~%"
+          (if (null? args) msg (apply format #f msg args))))
+
+(define (log-error msg . args)
+  "Log error message to stderr"
+  (format (current-error-port) "ERROR: ~a~%"
+          (if (null? args) msg (apply format #f msg args))))
+
+(define (read-json-file filepath)
+  "Read and parse JSON file"
+  (call-with-input-file filepath
+    (lambda (port)
+      (json->scm port))))
+
+(define (write-json-file filepath data)
+  "Write data as JSON to file"
+  (call-with-output-file filepath
+    (lambda (port)
+      (scm->json data port #:pretty #t))))
+
+(define (get-env-var name . default)
+  "Get environment variable with optional default"
+  (or (getenv name)
+      (if (null? default)
+          (error "Environment variable not set:" name)
+          (car default))))
+
+(define (make-http-request url #:key
+                          (method 'GET)
+                          (headers '())
+                          (body #f)
+                          (token #f))
+  "Make HTTP request with optional authentication"
+  (let* ((uri (string->uri url))
+         (auth-headers (if token
+                          `((authorization . ,(string-append "Bearer " token))
+                            . ,headers)
+                          headers)))
+    (catch #t
+      (lambda ()
+        (let-values (((response body-port)
+                     (http-request uri
+                                  #:method method
+                                  #:headers auth-headers
+                                  #:body body
+                                  #:streaming? #t)))
+          (let ((status (response-code response)))
+            (if (and (>= status 200) (< status 300))
+                (json->scm body-port)
+                (begin
+                  (log-warning "HTTP ~a failed with status ~a" method status)
+                  #f)))))
+      (lambda (key . args)
+        (log-error "HTTP request failed: ~a ~a" key args)
+        #f))))
+
+(define (extract-regex-matches pattern text)
+  "Extract all regex matches from text"
+  (let ((rx (make-regexp pattern))
+        (matches '()))
+    (let loop ((start 0))
+      (let ((match (regexp-exec rx text start)))
+        (if match
+            (begin
+              (set! matches (cons (match:substring match 1) matches))
+              (loop (match:end match)))
+            (delete-duplicates (reverse matches) string=?))))))
+#+end_src
+
+* JIRA Ticket Extraction
+
+The JIRA extraction script identifies and fetches JIRA tickets referenced in PRs.
+
+#+begin_src scheme :tangle scripts/extract-jira.scm
+;;; Extract JIRA ticket information from GitHub PR metadata
+(use-modules (pr2cr common)
+             (ice-9 format)
+             (ice-9 match)
+             (ice-9 regex)
+             (ice-9 getopt-long)
+             (json)
+             (srfi srfi-1)
+             (srfi srfi-26))
+
+(define option-spec
+  '((pr-metadata (value #t) (required? #t)
+                (single-char #\p))
+    (jira-url     (value #t) (required? #t)
+                 (single-char #\j))
+    (output       (value #t) (required? #t)
+                 (single-char #\o))
+    (jira-token   (value #t) (required? #f)
+                 (single-char #\t))
+    (help         (single-char #\h))))
+
+(define (extract-ticket-ids pr-data)
+  "Extract JIRA ticket IDs from PR data"
+  (let* ((ticket-pattern "\\b([A-Z]{2,}-[0-9]+)\\b")
+         (texts (filter string?
+                       (list (assoc-ref pr-data "title")
+                             (assoc-ref pr-data "body"))))
+         (commit-messages
+          (map (lambda (commit)
+                 (assoc-ref (assoc-ref commit "commit") "message"))
+               (or (assoc-ref pr-data "commits") '())))
+         (all-text (string-join (append texts commit-messages) "\n")))
+    (extract-regex-matches ticket-pattern all-text)))
+
+(define (fetch-ticket-details jira-url ticket-id token)
+  "Fetch ticket details from JIRA API"
+  (let ((url (format #f "~a/rest/api/3/issue/~a" jira-url ticket-id)))
+    (make-http-request url #:token token)))
+
+(define (extract-relevant-fields ticket-data jira-url)
+  "Extract relevant fields from JIRA ticket"
+  (let ((fields (assoc-ref ticket-data "fields")))
+    `(("key" . ,(assoc-ref ticket-data "key"))
+      ("summary" . ,(or (assoc-ref fields "summary") ""))
+      ("description" . ,(or (assoc-ref fields "description") ""))
+      ("status" . ,(assoc-ref (or (assoc-ref fields "status") '()) "name"))
+      ("priority" . ,(assoc-ref (or (assoc-ref fields "priority") '()) "name"))
+      ("issue_type" . ,(assoc-ref (or (assoc-ref fields "issuetype") '()) "name"))
+      ("assignee" . ,(assoc-ref (or (assoc-ref fields "assignee") '()) "displayName"))
+      ("reporter" . ,(assoc-ref (or (assoc-ref fields "reporter") '()) "displayName"))
+      ("created" . ,(or (assoc-ref fields "created") ""))
+      ("updated" . ,(or (assoc-ref fields "updated") ""))
+      ("components" . ,(map (cut assoc-ref <> "name")
+                           (or (assoc-ref fields "components") '())))
+      ("labels" . ,(or (assoc-ref fields "labels") '()))
+      ("url" . ,(format #f "~a/browse/~a" jira-url (assoc-ref ticket-data "key"))))))
+
+(define (sort-by-priority tickets)
+  "Sort tickets by priority"
+  (let ((priority-order '("Blocker" "Critical" "Major" "Minor" "Trivial")))
+    (sort tickets
+          (lambda (a b)
+            (let ((pa (assoc-ref a "priority"))
+                  (pb (assoc-ref b "priority")))
+              (< (or (list-index (cut string=? pa <>) priority-order) 999)
+                 (or (list-index (cut string=? pb <>) priority-order) 999)))))))
+
+(define (main args)
+  (let* ((options (getopt-long args option-spec))
+         (pr-metadata-file (option-ref options 'pr-metadata #f))
+         (jira-url (string-trim-right (option-ref options 'jira-url #f) #\/))
+         (output-file (option-ref options 'output #f))
+         (jira-token (or (option-ref options 'jira-token #f)
+                        (getenv "JIRA_API_TOKEN"))))
+
+    (when (option-ref options 'help #f)
+      (display "Usage: extract-jira.scm --pr-metadata FILE --jira-url URL --output FILE [--jira-token TOKEN]\n")
+      (exit 0))
+
+    ;; Load PR metadata
+    (let ((pr-data (read-json-file pr-metadata-file)))
+
+      ;; Extract ticket IDs
+      (let ((ticket-ids (extract-ticket-ids pr-data)))
+        (log-info "Found ~a JIRA ticket(s): ~a"
+                 (length ticket-ids)
+                 (string-join ticket-ids ", "))
+
+        ;; Fetch ticket details
+        (let* ((tickets (filter-map
+                        (lambda (id)
+                          (let ((data (fetch-ticket-details jira-url id jira-token)))
+                            (if data
+                                (extract-relevant-fields data jira-url)
+                                (begin
+                                  (log-warning "Could not fetch ticket ~a" id)
+                                  #f))))
+                        ticket-ids))
+               (sorted-tickets (sort-by-priority tickets))
+               (jira-data `(("tickets" . ,sorted-tickets)
+                          ("primary_ticket" . ,(if (null? sorted-tickets)
+                                                  #f
+                                                  (car sorted-tickets)))
+                          ("pr_number" . ,(assoc-ref pr-data "number"))
+                          ("pr_title" . ,(or (assoc-ref pr-data "title") "")))))
+
+          ;; Save output
+          (write-json-file output-file jira-data)
+          (log-info "JIRA data saved to ~a" output-file))))))
+
+(main (command-line))
+#+end_src
+
+* Summary Generation
+
+Generate comprehensive summaries using the extracted data.
+
+#+begin_src scheme :tangle scripts/generate-summary.scm
+;;; Generate change request summary from PR and JIRA data
+(use-modules (pr2cr common)
+             (ice-9 format)
+             (ice-9 match)
+             (ice-9 getopt-long)
+             (ice-9 textual-ports)
+             (ice-9 rdelim)
+             (json)
+             (srfi srfi-1)
+             (srfi srfi-19))
+
+(define option-spec
+  '((pr-metadata (value #t) (required? #t))
+    (jira-data   (value #t) (required? #t))
+    (template    (value #t) (required? #f))
+    (output      (value #t) (required? #t))
+    (start-time  (value #t) (required? #f))
+    (end-time    (value #t) (required? #f))
+    (help        (single-char #\h))))
+
+(define (calculate-risk-level pr-data)
+  "Calculate risk level based on PR characteristics"
+  (let* ((files (or (assoc-ref pr-data "files") '()))
+         (file-count (length files))
+         (critical-files (filter (lambda (file)
+                                  (or (string-contains (assoc-ref file "filename") "config")
+                                      (string-contains (assoc-ref file "filename") "database")
+                                      (string-contains (assoc-ref file "filename") "security")))
+                               files))
+         (additions (fold + 0 (map (lambda (f) (or (assoc-ref f "additions") 0)) files)))
+         (deletions (fold + 0 (map (lambda (f) (or (assoc-ref f "deletions") 0)) files))))
+
+    (cond
+     ((or (> file-count 20) (> additions 500) (not (null? critical-files)))
+      "High")
+     ((or (> file-count 10) (> additions 200))
+      "Medium")
+     (else "Low"))))
+
+(define (generate-testing-steps pr-data)
+  "Generate testing steps based on PR changes"
+  (let ((files (or (assoc-ref pr-data "files") '())))
+    (append
+     '("1. Deploy to staging environment"
+       "2. Run automated test suite")
+     (if (any (lambda (f) (string-contains (assoc-ref f "filename") "api")) files)
+         '("3. Execute API integration tests"
+           "4. Validate API response times")
+         '())
+     (if (any (lambda (f) (string-contains (assoc-ref f "filename") "database")) files)
+         '("3. Run database migration tests"
+           "4. Verify data integrity")
+         '())
+     '("5. Perform user acceptance testing"
+       "6. Document test results"))))
+
+(define (generate-rollback-steps)
+  "Generate standard rollback steps"
+  '("1. Stop deployment if in progress"
+    "2. Revert to previous deployment"
+    "3. Clear application caches"
+    "4. Verify service restoration"
+    "5. Notify stakeholders of rollback"))
+
+(define (format-change-request pr-data jira-data start-time end-time)
+  "Format the complete change request document"
+  (let* ((primary-ticket (assoc-ref jira-data "primary_ticket"))
+         (pr-title (assoc-ref pr-data "title"))
+         (pr-number (assoc-ref pr-data "number"))
+         (pr-author (assoc-ref (assoc-ref pr-data "author") "login"))
+         (risk-level (calculate-risk-level pr-data))
+         (testing-steps (generate-testing-steps pr-data))
+         (rollback-steps (generate-rollback-steps)))
+
+    (string-append
+     "# Change Request: " pr-title "\n\n"
+     "## Change Details\n\n"
+     "**Change ID:** CR-PR-" (number->string pr-number) "\n"
+     "**Related PR:** #" (number->string pr-number) "\n"
+     (if primary-ticket
+         (format #f "**JIRA Ticket:** ~a - ~a\n"
+                 (assoc-ref primary-ticket "key")
+                 (assoc-ref primary-ticket "summary"))
+         "")
+     "**Requester:** " pr-author "\n"
+     "**Risk Level:** " risk-level "\n"
+     "**Change Window:** " start-time " to " end-time "\n\n"
+
+     "## Description\n\n"
+     (or (assoc-ref pr-data "body") "No description provided.") "\n\n"
+
+     "## Impact Analysis\n\n"
+     "### Risk Assessment\n"
+     "- **Risk Level:** " risk-level "\n"
+     "- **Files Modified:** " (number->string (length (assoc-ref pr-data "files"))) "\n"
+     "- **Lines Added:** " (number->string (fold + 0 (map (lambda (f)
+                                                           (or (assoc-ref f "additions") 0))
+                                                         (assoc-ref pr-data "files")))) "\n"
+     "- **Lines Removed:** " (number->string (fold + 0 (map (lambda (f)
+                                                             (or (assoc-ref f "deletions") 0))
+                                                           (assoc-ref pr-data "files")))) "\n\n"
+
+     "### Affected Components\n"
+     (string-join (map (lambda (f) (format #f "- ~a" (assoc-ref f "filename")))
+                      (take (assoc-ref pr-data "files")
+                           (min 10 (length (assoc-ref pr-data "files")))))
+                 "\n") "\n\n"
+
+     "## Testing Plan\n\n"
+     (string-join testing-steps "\n") "\n\n"
+
+     "## Rollback Plan\n\n"
+     (string-join rollback-steps "\n") "\n\n"
+
+     "## Approval\n\n"
+     "- [ ] Development Team Lead\n"
+     "- [ ] Operations Team Lead\n"
+     "- [ ] Change Advisory Board\n\n"
+
+     "---\n"
+     "*Generated: " (date->string (current-date) "~Y-~m-~d ~H:~M:~S UTC") "*\n")))
+
+(define (main args)
+  (let* ((options (getopt-long args option-spec))
+         (pr-metadata-file (option-ref options 'pr-metadata #f))
+         (jira-data-file (option-ref options 'jira-data #f))
+         (output-file (option-ref options 'output #f))
+         (start-time (or (option-ref options 'start-time #f)
+                        (date->string (current-date) "~Y-~m-~d ~H:00:00 UTC")))
+         (end-time (or (option-ref options 'end-time #f)
+                      (date->string (current-date) "~Y-~m-~d ~H:00:00 UTC"))))
+
+    (when (option-ref options 'help #f)
+      (display "Usage: generate-summary.scm --pr-metadata FILE --jira-data FILE --output FILE\n")
+      (exit 0))
+
+    ;; Load data
+    (let* ((pr-data (read-json-file pr-metadata-file))
+           (jira-data (read-json-file jira-data-file))
+           (change-request (format-change-request pr-data jira-data start-time end-time)))
+
+      ;; Write output
+      (call-with-output-file output-file
+        (lambda (port)
+          (display change-request port)))
+
+      (log-info "Change request generated: ~a" output-file))))
+
+(main (command-line))
+#+end_src
+
+* Change Request Finalization
+
+Finalize and validate the change request.
+
+#+begin_src scheme :tangle scripts/finalize-change-request.scm
+;;; Finalize change request with validation
+(use-modules (pr2cr common)
+             (ice-9 format)
+             (ice-9 getopt-long)
+             (ice-9 textual-ports)
+             (ice-9 popen)
+             (srfi srfi-1))
+
+(define option-spec
+  '((draft     (value #t) (required? #t))
+    (output    (value #t) (required? #t))
+    (pr-number (value #t) (required? #t))
+    (help      (single-char #\h))))
+
+(define (run-vale-validation filepath)
+  "Run Vale validation on the document"
+  (let* ((command (format #f "vale --config=.vale-itil.ini ~a" filepath))
+         (port (open-pipe* OPEN_READ "sh" "-c" command))
+         (output (read-string port))
+         (status (close-pipe port)))
+    (if (zero? (status:exit-val status))
+        (begin
+          (log-info "Vale validation passed")
+          #t)
+        (begin
+          (log-warning "Vale validation issues found:\n~a" output)
+          #t)))) ; Continue even with warnings
+
+(define (add-metadata draft-content pr-number)
+  "Add final metadata to the change request"
+  (string-append
+   draft-content
+   "\n## Metadata\n\n"
+   "- **Document ID:** CR-" (number->string pr-number) "-"
+   (date->string (current-date) "~Y~m~d") "\n"
+   "- **Version:** 1.0\n"
+   "- **Status:** Draft\n"
+   "- **Created:** " (date->string (current-date) "~Y-~m-~d ~H:~M:~S UTC") "\n"
+   "- **Generator:** PR2CR Guile Workflow v1.0\n"))
+
+(define (main args)
+  (let* ((options (getopt-long args option-spec))
+         (draft-file (option-ref options 'draft #f))
+         (output-file (option-ref options 'output #f))
+         (pr-number (string->number (option-ref options 'pr-number #f))))
+
+    (when (option-ref options 'help #f)
+      (display "Usage: finalize-change-request.scm --draft FILE --output FILE --pr-number NUM\n")
+      (exit 0))
+
+    ;; Read draft content
+    (let* ((draft-content (call-with-input-file draft-file get-string-all))
+           (final-content (add-metadata draft-content pr-number)))
+
+      ;; Write final version
+      (call-with-output-file output-file
+        (lambda (port)
+          (display final-content port)))
+
+      ;; Run validation
+      (run-vale-validation output-file)
+
+      (log-info "Change request finalized: ~a" output-file))))
+
+(main (command-line))
+#+end_src
+
+* JIRA Publishing
+
+Publish the change request to JIRA.
+
+#+begin_src scheme :tangle scripts/publish-to-jira.scm
+;;; Publish change request to JIRA
+(use-modules (pr2cr common)
+             (ice-9 format)
+             (ice-9 getopt-long)
+             (ice-9 textual-ports)
+             (json)
+             (web client)
+             (web uri))
+
+(define option-spec
+  '((change-request (value #t) (required? #t))
+    (jira-url      (value #t) (required? #t))
+    (jira-project  (value #t) (required? #t))
+    (jira-token    (value #t) (required? #f))
+    (dry-run       (single-char #\n))
+    (help          (single-char #\h))))
+
+(define (markdown->jira-markup content)
+  "Convert Markdown to JIRA markup format"
+  ;; Simple conversion - can be enhanced
+  (let* ((text content)
+         ;; Headers
+         (text (regexp-substitute/global #f "^# (.+)$" text
+                                        'pre "h1. " 1 'post))
+         (text (regexp-substitute/global #f "^## (.+)$" text
+                                        'pre "h2. " 1 'post))
+         (text (regexp-substitute/global #f "^### (.+)$" text
+                                        'pre "h3. " 1 'post))
+         ;; Bold
+         (text (regexp-substitute/global #f "\\*\\*(.+?)\\*\\*" text
+                                        'pre "*" 1 "*" 'post))
+         ;; Code blocks
+         (text (regexp-substitute/global #f "```(.+?)```" text
+                                        'pre "{code}" 1 "{code}" 'post))
+         ;; Lists
+         (text (regexp-substitute/global #f "^- (.+)$" text
+                                        'pre "* " 1 'post)))
+    text))
+
+(define (create-jira-issue jira-url project-key summary description token)
+  "Create a new JIRA issue"
+  (let* ((url (format #f "~a/rest/api/3/issue" jira-url))
+         (payload `(("fields" . (("project" . (("key" . ,project-key)))
+                               ("summary" . ,summary)
+                               ("description" . ,description)
+                               ("issuetype" . (("name" . "Task")))))))
+         (json-body (scm->json-string payload)))
+
+    (make-http-request url
+                      #:method 'POST
+                      #:headers '((content-type . "application/json"))
+                      #:body json-body
+                      #:token token)))
+
+(define (main args)
+  (let* ((options (getopt-long args option-spec))
+         (cr-file (option-ref options 'change-request #f))
+         (jira-url (string-trim-right (option-ref options 'jira-url #f) #\/))
+         (project-key (option-ref options 'jira-project #f))
+         (jira-token (or (option-ref options 'jira-token #f)
+                        (getenv "JIRA_API_TOKEN")))
+         (dry-run (option-ref options 'dry-run #f)))
+
+    (when (option-ref options 'help #f)
+      (display "Usage: publish-to-jira.scm --change-request FILE --jira-url URL --jira-project KEY\n")
+      (exit 0))
+
+    ;; Read change request
+    (let* ((content (call-with-input-file cr-file get-string-all))
+           (lines (string-split content #\newline))
+           (title-line (find (lambda (l) (string-prefix? "# " l)) lines))
+           (summary (if title-line
+                       (substring title-line 2)
+                       "Change Request"))
+           (jira-content (markdown->jira-markup content)))
+
+      (if dry-run
+          (begin
+            (log-info "DRY RUN - Would create JIRA issue:")
+            (log-info "  Project: ~a" project-key)
+            (log-info "  Summary: ~a" summary)
+            (log-info "  Content length: ~a chars" (string-length jira-content)))
+          (let ((result (create-jira-issue jira-url project-key summary
+                                         jira-content jira-token)))
+            (if result
+                (log-info "JIRA issue created: ~a"
+                         (assoc-ref result "key"))
+                (log-error "Failed to create JIRA issue")))))))
+
+(main (command-line))
+#+end_src
+
+* Updated Makefile for Guile
+
+#+begin_src makefile :tangle Makefile
+# Makefile for GitHub PR → ITIL Change Request Workflow (Guile Version)
+# Generates validated change request documentation from pull requests
+
+# Configuration
+SHELL := /bin/bash
+.SHELLFLAGS := -eu -o pipefail -c
+
+# Variables
+GITHUB_ORG ?= $(shell git remote get-url origin | sed -E 's/.*[:/]([^/]+)\/[^/]+\.git/\1/')
+GITHUB_REPO ?= $(shell basename -s .git `git remote get-url origin`)
+PR_NUMBER ?= $(error PR_NUMBER is required)
+VALE_STYLES_PATH ?= vale-styles
+OUTPUT_DIR ?= change-requests
+GUILE := guile3
+
+# JIRA Configuration
+JIRA_URL ?= $(error JIRA_URL is required, e.g., https://company.atlassian.net)
+JIRA_PROJECT ?= $(error JIRA_PROJECT is required, e.g., OPS)
+
+# Timestamps (can be overridden)
+CHANGE_START ?= $(shell date -u -d "+2 days" '+%Y-%m-%d %H:00:00 UTC')
+CHANGE_END ?= $(shell date -u -d "+2 days 2 hours" '+%Y-%m-%d %H:00:00 UTC')
+
+# Colors for output
+CYAN := \033[0;36m
+GREEN := \033[0;32m
+RED := \033[0;31m
+NC := \033[0m # No Color
+
+# Default target
+.PHONY: all
+all: generate
+
+# Tangle org files to generate scripts
+.PHONY: tangle
+tangle:
+	@echo -e "$(CYAN)Tangling org files to generate Guile scripts...$(NC)"
+	@emacs --batch --eval "(require 'org)" --eval "(org-babel-tangle-file \"pr2cr-guile.org\")"
+	@chmod +x scripts/*.scm
+	@echo -e "$(GREEN)✓ Scripts generated$(NC)"
+
+# Main workflow
+.PHONY: generate
+generate: tangle check-deps fetch-metadata extract-jira generate-summary finalize-change-request
+	@echo -e "$(GREEN)✓ Change request generated successfully!$(NC)"
+	@echo -e "$(CYAN)Output: $(OUTPUT_DIR)/CR-$(PR_NUMBER)-$(shell date +%Y%m%d).md$(NC)"
+
+# Check dependencies
+.PHONY: check-deps
+check-deps:
+	@echo -e "$(CYAN)Checking dependencies...$(NC)"
+	@command -v gh >/dev/null 2>&1 || { echo -e "$(RED)Error: GitHub CLI (gh) is not installed$(NC)"; exit 1; }
+	@command -v jq >/dev/null 2>&1 || { echo -e "$(RED)Error: jq is not installed$(NC)"; exit 1; }
+	@command -v vale >/dev/null 2>&1 || { echo -e "$(RED)Error: Vale is not installed$(NC)"; exit 1; }
+	@command -v $(GUILE) >/dev/null 2>&1 || { echo -e "$(RED)Error: Guile 3 is not installed$(NC)"; exit 1; }
+	@echo -e "$(GREEN)✓ All dependencies satisfied$(NC)"
+
+# Setup Guile load path
+export GUILE_LOAD_PATH := $(PWD)/scripts:$(GUILE_LOAD_PATH)
+
+# Fetch GitHub PR metadata
+.PHONY: fetch-metadata
+fetch-metadata:
+	@echo -e "$(CYAN)Fetching PR #$(PR_NUMBER) metadata...$(NC)"
+	@mkdir -p $(OUTPUT_DIR)/temp
+	@gh pr view $(PR_NUMBER) \
+		--repo $(GITHUB_ORG)/$(GITHUB_REPO) \
+		--json number,title,body,author,createdAt,updatedAt,labels,files,commits,reviews,checks \
+		> $(OUTPUT_DIR)/temp/pr-metadata.json
+	@echo -e "$(GREEN)✓ PR metadata fetched$(NC)"
+
+# Extract JIRA ticket from PR
+.PHONY: extract-jira
+extract-jira: $(OUTPUT_DIR)/temp/pr-metadata.json
+	@echo -e "$(CYAN)Extracting JIRA ticket information...$(NC)"
+	@$(GUILE) scripts/extract-jira.scm \
+		--pr-metadata $(OUTPUT_DIR)/temp/pr-metadata.json \
+		--jira-url $(JIRA_URL) \
+		--output $(OUTPUT_DIR)/temp/jira-data.json
+	@echo -e "$(GREEN)✓ JIRA data extracted$(NC)"
+
+# Generate long-form summary
+.PHONY: generate-summary
+generate-summary: $(OUTPUT_DIR)/temp/pr-metadata.json $(OUTPUT_DIR)/temp/jira-data.json
+	@echo -e "$(CYAN)Generating change request summary...$(NC)"
+	@$(GUILE) scripts/generate-summary.scm \
+		--pr-metadata $(OUTPUT_DIR)/temp/pr-metadata.json \
+		--jira-data $(OUTPUT_DIR)/temp/jira-data.json \
+		--output $(OUTPUT_DIR)/temp/change-request-draft.md \
+		--start-time "$(CHANGE_START)" \
+		--end-time "$(CHANGE_END)"
+	@echo -e "$(GREEN)✓ Summary generated$(NC)"
+
+# Finalize change request
+.PHONY: finalize-change-request
+finalize-change-request: $(OUTPUT_DIR)/temp/change-request-draft.md
+	@echo -e "$(CYAN)Finalizing change request...$(NC)"
+	@$(GUILE) scripts/finalize-change-request.scm \
+		--draft $(OUTPUT_DIR)/temp/change-request-draft.md \
+		--output $(OUTPUT_DIR)/CR-$(PR_NUMBER)-$(shell date +%Y%m%d).md \
+		--pr-number $(PR_NUMBER)
+	@echo -e "$(GREEN)✓ Change request finalized$(NC)"
+
+# Install Vale styles if needed
+.PHONY: install-vale-styles
+install-vale-styles:
+	@if [ ! -d "$(VALE_STYLES_PATH)/ITIL4" ]; then \
+		echo -e "$(CYAN)Installing ITIL 4 Vale styles...$(NC)"; \
+		mkdir -p $(VALE_STYLES_PATH); \
+		cp -r a079757a1dc18b56c36fbf62d66d4582/vale-styles/ITIL4 $(VALE_STYLES_PATH)/ 2>/dev/null || true; \
+		echo -e "$(GREEN)✓ Vale styles installed$(NC)"; \
+	fi
+
+# Publish to JIRA (optional)
+.PHONY: publish
+publish: $(OUTPUT_DIR)/CR-$(PR_NUMBER)-$(shell date +%Y%m%d).md
+	@echo -e "$(CYAN)Publishing to JIRA...$(NC)"
+	@$(GUILE) scripts/publish-to-jira.scm \
+		--change-request $(OUTPUT_DIR)/CR-$(PR_NUMBER)-$(shell date +%Y%m%d).md \
+		--jira-url $(JIRA_URL) \
+		--jira-project $(JIRA_PROJECT)
+	@echo -e "$(GREEN)✓ Published to JIRA$(NC)"
+
+# Clean generated files
+.PHONY: clean
+clean:
+	@echo -e "$(CYAN)Cleaning generated files...$(NC)"
+	@rm -rf $(OUTPUT_DIR)/temp
+	@rm -f scripts/*.scm
+	@echo -e "$(GREEN)✓ Cleaned$(NC)"
+
+# Help
+.PHONY: help
+help:
+	@echo "PR to Change Request Workflow (Guile Version)"
+	@echo ""
+	@echo "Usage:"
+	@echo "  gmake generate PR_NUMBER=123 JIRA_URL=https://company.atlassian.net JIRA_PROJECT=OPS"
+	@echo ""
+	@echo "Targets:"
+	@echo "  generate  - Generate change request from PR"
+	@echo "  publish   - Publish change request to JIRA"
+	@echo "  clean     - Remove generated files"
+	@echo "  help      - Show this help"
+	@echo ""
+	@echo "Required variables:"
+	@echo "  PR_NUMBER    - GitHub PR number"
+	@echo "  JIRA_URL     - JIRA instance URL"
+	@echo "  JIRA_PROJECT - JIRA project key"
+#+end_src
+
+* Testing
+
+** Test the workflow
+
+To test the implementation, we can create a simple test script:
+
+#+begin_src shell :tangle test-workflow.sh :shebang "#!/bin/bash"
+#!/bin/bash
+# Test the PR2CR Guile workflow
+
+set -e
+
+echo "Testing PR2CR Guile Workflow..."
+
+# Set test variables
+export PR_NUMBER=${1:-1}
+export JIRA_URL="https://example.atlassian.net"
+export JIRA_PROJECT="TEST"
+
+# Run with dry-run for testing
+echo "1. Tangling org file..."
+emacs --batch --eval "(require 'org)" --eval "(org-babel-tangle-file \"pr2cr-guile.org\")"
+
+echo "2. Setting up test data..."
+mkdir -p change-requests/temp
+
+# Create mock PR data if not running against real GitHub
+if [ ! -f "change-requests/temp/pr-metadata.json" ]; then
+    cat > change-requests/temp/pr-metadata.json <<EOF
+{
+  "number": $PR_NUMBER,
+  "title": "TEST-123: Add new feature",
+  "body": "This PR implements the new feature described in TEST-123",
+  "author": {"login": "testuser"},
+  "files": [
+    {"filename": "src/main.scm", "additions": 50, "deletions": 10},
+    {"filename": "tests/test.scm", "additions": 30, "deletions": 0}
+  ],
+  "commits": [
+    {"commit": {"message": "TEST-123: Initial implementation"}}
+  ]
+}
+EOF
+fi
+
+echo "3. Running workflow..."
+gmake generate PR_NUMBER=$PR_NUMBER JIRA_URL=$JIRA_URL JIRA_PROJECT=$JIRA_PROJECT || true
+
+echo "Test complete!"
+#+end_src
+
+* Usage Instructions
+
+** Setup
+
+1. Ensure Guile 3 is installed:
+   #+begin_src shell
+   guile3 --version
+   #+end_src
+
+2. Install required Guile libraries:
+   #+begin_src shell
+   # Most should be included with Guile 3
+   # For JSON support, ensure guile-json is installed
+   pkg install guile-json # FreeBSD
+   #+end_src
+
+3. Configure Emacs for the project:
+   - The =.dir-locals.el= file sets up the proper Guile and org-mode configuration
+   - Open this file in Emacs to use interactive development
+
+** Generate Scripts
+
+Tangle this org file to generate the Guile scripts:
+
+#+begin_src shell
+gmake tangle
+# or
+emacs --batch --eval "(require 'org)" --eval "(org-babel-tangle-file \"pr2cr-guile.org\")"
+#+end_src
+
+** Run the Workflow
+
+Generate a change request from a GitHub PR:
+
+#+begin_src shell
+gmake generate PR_NUMBER=123 JIRA_URL=https://company.atlassian.net JIRA_PROJECT=OPS
+#+end_src
+
+** Development in Emacs
+
+1. Open this file in Emacs
+2. Use =C-c C-c= on code blocks to execute them
+3. Use =C-c C-v t= to tangle all blocks
+4. Use Geiser for interactive Guile development
