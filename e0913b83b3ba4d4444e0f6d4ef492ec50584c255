@@ -1,0 +1,4 @@
+Issue: Makefile evaluated required variables immediately causing errors
+Fix: Deferred variable checking to runtime with check-vars target
+Testing: Verified 'gmake deps' works without errors
+Compatibility: Replaced all echo -e with printf for POSIX shell compliance
