@@ -1,0 +1,4 @@
+Source: Vale styles adapted from the original Python gist implementation
+Purpose: Ensure change requests follow ITIL 4 standards and terminology
+Validation: Tested with sample change request documents
+Rules: Includes terminology checks, clarity metrics, and required section validation
