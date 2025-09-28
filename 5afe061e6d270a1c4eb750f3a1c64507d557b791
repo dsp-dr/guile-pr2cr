@@ -1,0 +1,4 @@
+Testing: Verified Makefile works with gmake on FreeBSD 14.3
+Validation: All printf statements tested for proper color output
+Compatibility: Removed bash-specific features like pipefail
+Dependencies: Checks for gh, jq, vale, guile3 presence
