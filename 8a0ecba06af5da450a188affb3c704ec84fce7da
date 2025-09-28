@@ -1,0 +1,4 @@
+Testing approach: Mock PR data for offline testing
+Validation: Checks for emacs, git, gh, guile3, vale, jq, gmake presence
+Platform: Specifically targets FreeBSD with appropriate package names
+Usage: Run check-deps.sh before first use, test-workflow.sh for validation
