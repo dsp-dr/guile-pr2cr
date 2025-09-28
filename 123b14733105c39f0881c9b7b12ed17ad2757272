@@ -1,0 +1,4 @@
+Context: Ported Python PR2CR workflow from GitHub gist to Guile 3
+Implementation: Used literate programming with org-mode for maintainability
+Design choice: Created simple JSON parser using jq since FreeBSD's guile3 package lacks built-in JSON support
+Testing: Verified tangling generates correct Guile scripts with proper module structure
