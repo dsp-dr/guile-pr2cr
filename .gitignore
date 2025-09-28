@@ -1,0 +1,19 @@
+# Emacs
+*~
+\#*\#
+.\#*
+*.elc
+.dir-locals-2.el
+
+# Generated output
+change-requests/
+*.md
+!README.md
+
+# Temporary files
+*.tmp
+temp/
+
+# OS files
+.DS_Store
+Thumbs.db
