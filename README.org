@@ -2,6 +2,13 @@
 #+AUTHOR: DevOps Team
 #+DATE: [2024-09-28]
 
+[[https://img.shields.io/badge/language-Guile%203-blue.svg][https://img.shields.io/badge/language-Guile%203-blue.svg]]
+[[https://img.shields.io/badge/platform-FreeBSD-red.svg][https://img.shields.io/badge/platform-FreeBSD-red.svg]]
+[[https://img.shields.io/badge/ITIL-v4%20Compliant-green.svg][https://img.shields.io/badge/ITIL-v4%20Compliant-green.svg]]
+[[https://img.shields.io/badge/literate-org--mode-purple.svg][https://img.shields.io/badge/literate-org--mode-purple.svg]]
+[[https://img.shields.io/badge/vale-enabled-yellow.svg][https://img.shields.io/badge/vale-enabled-yellow.svg]]
+[[https://img.shields.io/badge/license-MIT-lightgrey.svg][https://img.shields.io/badge/license-MIT-lightgrey.svg]]
+
 * Overview
 
 A Guile 3 implementation of an automated workflow that converts GitHub Pull Requests into ITIL 4 compliant Change Request documents.
