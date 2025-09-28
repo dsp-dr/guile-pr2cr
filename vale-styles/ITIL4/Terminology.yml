@@ -1,0 +1,55 @@
+extends: substitution
+message: "Use the ITIL 4 term '%s' instead of '%s'."
+level: error
+ignorecase: true
+swap:
+  # Change Management Terms
+  'change request': 'Change Request'
+  'request for change': 'Change Request'
+  'rfc': 'Change Request'
+  'change ticket': 'Change Request'
+  
+  # Change Types (ITIL 4 specific)
+  'standard change': 'Standard Change'
+  'normal change': 'Normal Change'
+  'emergency change': 'Emergency Change'
+  'major change': 'Normal Change'
+  
+  # Process Terms
+  'change advisory board': 'Change Advisory Board'
+  'cab': 'Change Advisory Board'
+  'change control board': 'Change Advisory Board'
+  'ccb': 'Change Advisory Board'
+  
+  # Review Terms
+  'post implementation review': 'Post-Implementation Review'
+  'post-implementation review': 'Post-Implementation Review'
+  'pir': 'Post-Implementation Review'
+  'post mortem': 'Post-Implementation Review'
+  'postmortem': 'Post-Implementation Review'
+  
+  # Service Management
+  'configuration item': 'Configuration Item'
+  'ci': 'Configuration Item'
+  'service component': 'Configuration Item'
+  
+  # Risk Terms
+  'risk assessment': 'Risk Assessment'
+  'risk analysis': 'Risk Assessment'
+  'impact analysis': 'Impact Assessment'
+  'impact assessment': 'Impact Assessment'
+  
+  # Approval Terms
+  'approval': 'Authorization'
+  'approved': 'Authorized'
+  'approver': 'Change Authority'
+  
+  # Implementation Terms
+  'deployment': 'Implementation'
+  'rollout': 'Implementation'
+  'release': 'Implementation'
+  
+  # Rollback Terms
+  'rollback': 'Remediation Plan'
+  'backout': 'Remediation Plan'
+  'revert': 'Remediation Plan'

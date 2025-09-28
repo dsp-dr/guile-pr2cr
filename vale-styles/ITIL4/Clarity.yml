@@ -1,0 +1,28 @@
+extends: existence
+message: "Avoid vague language in Change Requests: '%s'. Be specific and measurable."
+level: warning
+ignorecase: true
+tokens:
+  - 'might'
+  - 'maybe'
+  - 'possibly'
+  - 'could'
+  - 'should work'
+  - 'probably'
+  - 'various'
+  - 'multiple'
+  - 'several'
+  - 'etc'
+  - 'and so on'
+  - 'and more'
+  - 'stuff'
+  - 'things'
+  - 'soon'
+  - 'later'
+  - 'recently'
+  - 'quickly'
+  - 'slowly'
+  - 'a lot'
+  - 'some'
+  - 'many'
+  - 'few'

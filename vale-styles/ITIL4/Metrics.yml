@@ -1,0 +1,14 @@
+extends: existence
+message: "Include specific metrics and measurements: '%s' should have a value."
+level: suggestion
+scope: sentence
+tokens:
+  - 'downtime'
+  - 'performance impact'
+  - 'response time'
+  - 'availability'
+  - 'success criteria'
+  - 'completion time'
+  - 'recovery time'
+  - 'test coverage'
+  - 'error rate'

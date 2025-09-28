@@ -1,0 +1,15 @@
+extends: existence
+message: "ITIL 4 Change Requests must include the '%s' section."
+level: error
+scope: raw
+tokens:
+  - '## Change Details'
+  - '## Risk Assessment'
+  - '## Impact Assessment'
+  - '## Implementation Plan'
+  - '## Remediation Plan'
+  - '## Test Plan'
+  - '## Communication Plan'
+  - '## Post-Implementation Review'
+  - '## Schedule'
+  - '## Affected Configuration Items'
