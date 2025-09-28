@@ -1,0 +1,5 @@
+Generation: Scripts tangled from pr2cr-guile.org using org-babel
+Module structure: Each script is a standalone Guile module with proper exports
+JSON handling: Uses external jq command due to lack of native JSON in FreeBSD guile3
+Testing: Basic module loading verified with guile3 -l
+Dependencies: Requires only standard Guile 3 modules plus jq command
