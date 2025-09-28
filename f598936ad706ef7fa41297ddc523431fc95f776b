@@ -1,0 +1,4 @@
+Documentation: Written in org-mode for consistency with literate programming approach
+Coverage: Installation, usage, development, architecture, troubleshooting
+Examples: Includes practical command examples for all use cases
+Platform focus: Emphasizes FreeBSD compatibility and requirements
