@@ -1,0 +1,3 @@
+Purpose: Keep repository clean from generated and temporary files
+Patterns: Standard Emacs and OS-specific exclusions
+Build artifacts: Excludes generated change requests but preserves scripts
