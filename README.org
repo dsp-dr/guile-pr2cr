@@ -1,0 +1,214 @@
+#+TITLE: PR to Change Request Workflow - Guile Implementation
+#+AUTHOR: DevOps Team
+#+DATE: [2024-09-28]
+
+* Overview
+
+A Guile 3 implementation of an automated workflow that converts GitHub Pull Requests into ITIL 4 compliant Change Request documents.
+
+This project bridges the gap between development practices and operational change management by:
+- Extracting metadata from GitHub Pull Requests
+- Fetching related JIRA ticket information
+- Generating comprehensive change request documentation
+- Validating content with Vale (ITIL 4 terminology)
+- Publishing to JIRA (optional)
+
+* Requirements
+
+** FreeBSD
+
+#+begin_src sh
+# Install dependencies
+sudo pkg install emacs git gh guile3 vale jq gmake
+
+# Check all dependencies
+./check-deps.sh
+#+end_src
+
+Note: JSON support is implemented natively in this project (no external JSON library needed).
+
+* Project Structure
+
+#+begin_example
+.
+├── pr2cr-guile.org        # Literate programming source (org-mode)
+├── Makefile               # GNU Make workflow orchestration
+├── scripts/               # Generated Guile scripts
+│   ├── common.scm         # Shared utilities
+│   ├── json-simple.scm   # Simple JSON parser/writer
+│   ├── extract-jira.scm   # JIRA ticket extraction
+│   ├── generate-summary.scm # Change request generation
+│   ├── finalize-change-request.scm # Finalization and validation
+│   └── publish-to-jira.scm # JIRA publishing
+├── vale-styles/           # Vale ITIL 4 style definitions
+└── change-requests/       # Generated change requests
+#+end_example
+
+* Usage
+
+** Generate Scripts from Org File
+
+#+begin_src sh
+# Using make
+gmake tangle
+
+# Or directly with Emacs
+emacs --batch --eval "(require 'org)" --eval "(org-babel-tangle-file \"pr2cr-guile.org\")"
+#+end_src
+
+** Generate Change Request
+
+#+begin_src sh
+# Basic usage
+gmake generate PR_NUMBER=123 JIRA_URL=https://company.atlassian.net JIRA_PROJECT=OPS
+
+# With custom change window
+gmake generate PR_NUMBER=123 \
+  JIRA_URL=https://company.atlassian.net \
+  JIRA_PROJECT=OPS \
+  CHANGE_START="2024-09-30 14:00:00 UTC" \
+  CHANGE_END="2024-09-30 16:00:00 UTC"
+#+end_src
+
+** Publish to JIRA
+
+#+begin_src sh
+gmake publish PR_NUMBER=123 JIRA_URL=https://company.atlassian.net JIRA_PROJECT=OPS
+#+end_src
+
+* Development in Emacs
+
+** Setup
+
+1. Open =pr2cr-guile.org= in Emacs
+2. The =.dir-locals.el= file automatically configures:
+   - Geiser for Guile 3 REPL integration
+   - Org-babel for literate programming
+   - Proper indentation and scheme settings
+
+** Interactive Development
+
+| Key Binding | Function                         |
+|-------------+----------------------------------|
+| =C-c C-c=   | Execute code block               |
+| =C-c C-v t= | Tangle all code blocks           |
+| =C-c '=     | Edit code block in dedicated buffer |
+| =M-x geiser= | Start Guile REPL                |
+
+* Environment Variables
+
+| Variable          | Description                            | Required |
+|-------------------+----------------------------------------+----------|
+| =JIRA_API_TOKEN=  | JIRA authentication token             | Optional |
+| =GITHUB_TOKEN=    | GitHub authentication (used by gh CLI) | Optional |
+| =GUILE_LOAD_PATH= | Automatically set by Makefile         | Auto     |
+
+* Testing
+
+#+begin_src sh
+# Run test workflow with mock data
+sh test-workflow.sh
+
+# Test specific PR
+sh test-workflow.sh 456
+#+end_src
+
+* Architecture
+
+The workflow follows a pipeline architecture:
+
+#+begin_src mermaid
+graph LR
+    A[GitHub PR] --> B[Data Extraction]
+    B --> C[JIRA Integration]
+    C --> D[Risk Analysis]
+    D --> E[Content Generation]
+    E --> F[Vale Validation]
+    F --> G[JIRA Publishing]
+#+end_src
+
+** Pipeline Stages
+
+1. *Data Extraction* - Fetch PR metadata from GitHub
+2. *JIRA Integration* - Extract and fetch JIRA ticket details
+3. *Risk Analysis* - Calculate risk based on code changes
+4. *Content Generation* - Create ITIL-compliant documentation
+5. *Validation* - Vale linting for terminology compliance
+6. *Publishing* - Optional JIRA issue creation
+
+* Features
+
+- *Literate Programming* - Full implementation in org-mode
+- *ITIL 4 Compliance* - Uses proper change management terminology
+- *Risk Assessment* - Automatic risk level calculation based on:
+  - Number of files changed
+  - Lines of code modified
+  - Critical file detection (config, database, security)
+- *Testing Plans* - Generated based on code changes
+- *Rollback Procedures* - Standard rollback steps included
+- *Vale Integration* - Prose linting for consistency
+- *Native JSON Support* - Built-in JSON parser (no external dependencies)
+
+* Workflow Details
+
+** Risk Level Calculation
+
+Risk is automatically determined based on:
+
+| Factor | High Risk | Medium Risk | Low Risk |
+|--------+-----------+-------------+----------|
+| Files Changed | >20 | 10-20 | <10 |
+| Lines Added | >500 | 200-500 | <200 |
+| Critical Files | Any | None | None |
+
+** Generated Testing Steps
+
+Testing steps are automatically generated based on:
+- API changes → API integration tests
+- Database changes → Migration tests and data integrity checks
+- All changes → Automated test suite and UAT
+
+* Troubleshooting
+
+** Dependency Issues
+
+If dependency check fails:
+
+#+begin_src sh
+# Install all dependencies on FreeBSD
+sudo pkg install emacs git gh guile3 vale jq gmake
+
+# Verify Guile version
+guile3 --version
+#+end_src
+
+** Vale Configuration
+
+If Vale styles are missing:
+
+#+begin_src sh
+# The Makefile will automatically install Vale styles
+gmake install-vale-styles
+#+end_src
+
+** JSON Module Not Found
+
+This implementation includes a native JSON parser, so no external JSON library is required.
+If you see JSON-related errors, ensure you've tangled the latest version:
+
+#+begin_src sh
+gmake clean tangle
+#+end_src
+
+* Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make changes in =pr2cr-guile.org=
+4. Tangle to generate scripts
+5. Test with =test-workflow.sh=
+6. Submit a pull request
+
+* License
+
+See LICENSE file in the repository.
