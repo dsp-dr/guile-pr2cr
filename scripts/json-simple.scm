@@ -1,9 +1,9 @@
-nil
 ;;; Simple JSON parser and writer for Guile
 (define-module (json-simple)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 regex)
   #:use-module (ice-9 format)
+  #:use-module (ice-9 popen)
   #:use-module (srfi srfi-1)
   #:export (json->scm
             scm->json
@@ -16,10 +16,12 @@ nil
     (call-with-output-file temp-file
       (lambda (p) (display content p)))
     (let* ((result-port (open-pipe* OPEN_READ "jq" "." temp-file))
-           (result (read result-port)))
-      (close-pipe result-port)
+           (result (read result-port))
+           (status (close-pipe result-port)))
       (delete-file temp-file)
-      result)))
+      (if (zero? (status:exit-val status))
+          result
+          (error "JSON parsing failed - ensure jq is installed and input is valid JSON")))))
 
 (define (scm->json-string obj)
   "Convert Scheme object to JSON string"

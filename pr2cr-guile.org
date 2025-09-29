@@ -1,7 +1,7 @@
 #+TITLE: PR to Change Request Workflow - Guile Implementation
 #+AUTHOR: DevOps Team
 #+DATE: [2024-09-28]
-#+PROPERTY: header-args:scheme :tangle yes :mkdirp yes :shebang "#!/usr/bin/env guile3"
+#+PROPERTY: header-args:scheme :tangle yes :mkdirp yes
 #+PROPERTY: header-args :results output :exports both
 #+OPTIONS: toc:3 num:nil ^:nil
 
@@ -16,12 +16,13 @@ the creation of ITIL 4 compliant Change Request documents from GitHub Pull Reque
 
 Since Guile doesn't have a built-in JSON module in the base FreeBSD package, we implement a simple JSON parser/writer.
 
-#+begin_src scheme :tangle scripts/json-simple.scm :shebang nil
+#+begin_src scheme :tangle scripts/json-simple.scm
 ;;; Simple JSON parser and writer for Guile
 (define-module (json-simple)
   #:use-module (ice-9 rdelim)
   #:use-module (ice-9 regex)
   #:use-module (ice-9 format)
+  #:use-module (ice-9 popen)
   #:use-module (srfi srfi-1)
   #:export (json->scm
             scm->json
@@ -34,10 +35,12 @@ Since Guile doesn't have a built-in JSON module in the base FreeBSD package, we 
     (call-with-output-file temp-file
       (lambda (p) (display content p)))
     (let* ((result-port (open-pipe* OPEN_READ "jq" "." temp-file))
-           (result (read result-port)))
-      (close-pipe result-port)
+           (result (read result-port))
+           (status (close-pipe result-port)))
       (delete-file temp-file)
-      result)))
+      (if (zero? (status:exit-val status))
+          result
+          (error "JSON parsing failed - ensure jq is installed and input is valid JSON")))))
 
 (define (scm->json-string obj)
   "Convert Scheme object to JSON string"
@@ -81,7 +84,7 @@ Since Guile doesn't have a built-in JSON module in the base FreeBSD package, we 
 
 This module contains shared utilities used across all scripts.
 
-#+begin_src scheme :tangle scripts/common.scm :shebang nil
+#+begin_src scheme :tangle scripts/common.scm
 ;;; Common utilities for PR2CR workflow
 (define-module (pr2cr common)
   #:use-module (ice-9 format)
@@ -187,7 +190,7 @@ This module contains shared utilities used across all scripts.
 
 The JIRA extraction script identifies and fetches JIRA tickets referenced in PRs.
 
-#+begin_src scheme :tangle scripts/extract-jira.scm
+#+begin_src scheme :tangle scripts/extract-jira.scm :shebang "#!/usr/bin/env guile3"
 ;;; Extract JIRA ticket information from GitHub PR metadata
 (use-modules (pr2cr common)
              (ice-9 format)
@@ -305,7 +308,7 @@ The JIRA extraction script identifies and fetches JIRA tickets referenced in PRs
 
 Generate comprehensive summaries using the extracted data.
 
-#+begin_src scheme :tangle scripts/generate-summary.scm
+#+begin_src scheme :tangle scripts/generate-summary.scm :shebang "#!/usr/bin/env guile3"
 ;;; Generate change request summary from PR and JIRA data
 (use-modules (pr2cr common)
              (ice-9 format)
@@ -461,7 +464,7 @@ Generate comprehensive summaries using the extracted data.
 
 Finalize and validate the change request.
 
-#+begin_src scheme :tangle scripts/finalize-change-request.scm
+#+begin_src scheme :tangle scripts/finalize-change-request.scm :shebang "#!/usr/bin/env guile3"
 ;;; Finalize change request with validation
 (use-modules (pr2cr common)
              (ice-9 format)
@@ -533,7 +536,7 @@ Finalize and validate the change request.
 
 Publish the change request to JIRA.
 
-#+begin_src scheme :tangle scripts/publish-to-jira.scm
+#+begin_src scheme :tangle scripts/publish-to-jira.scm :shebang "#!/usr/bin/env guile3"
 ;;; Publish change request to JIRA
 (use-modules (pr2cr common)
              (ice-9 format)

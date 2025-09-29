@@ -1,4 +1,3 @@
-nil
 ;;; Common utilities for PR2CR workflow
 (define-module (pr2cr common)
   #:use-module (ice-9 format)

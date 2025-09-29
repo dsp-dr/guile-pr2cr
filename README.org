@@ -102,13 +102,52 @@ gmake publish PR_NUMBER=123 JIRA_URL=https://company.atlassian.net JIRA_PROJECT=
 | =C-c '=     | Edit code block in dedicated buffer |
 | =M-x geiser= | Start Guile REPL                |
 
-* Environment Variables
+* Configuration
+
+** Environment Variables
 
 | Variable          | Description                            | Required |
 |-------------------+----------------------------------------+----------|
 | =JIRA_API_TOKEN=  | JIRA authentication token             | Optional |
 | =GITHUB_TOKEN=    | GitHub authentication (used by gh CLI) | Optional |
 | =GUILE_LOAD_PATH= | Automatically set by Makefile         | Auto     |
+
+** Setting Up Authentication
+
+*** GitHub CLI Authentication
+#+begin_src sh
+# Login to GitHub (one-time setup)
+gh auth login
+
+# Verify authentication
+gh auth status
+#+end_src
+
+*** JIRA API Token
+#+begin_src sh
+# Set JIRA token as environment variable
+export JIRA_API_TOKEN="your-jira-api-token"
+
+# Or add to your shell profile
+echo 'export JIRA_API_TOKEN="your-jira-api-token"' >> ~/.profile
+#+end_src
+
+** Customization
+
+*** Change Window Configuration
+You can customize the change window timing:
+
+#+begin_src sh
+# Default: +2 days from now
+export CHANGE_START="2024-10-15 14:00:00 UTC"
+export CHANGE_END="2024-10-15 16:00:00 UTC"
+#+end_src
+
+*** Output Directory
+#+begin_src sh
+# Default: change-requests/
+export OUTPUT_DIR=/path/to/custom/output
+#+end_src
 
 * Testing
 
